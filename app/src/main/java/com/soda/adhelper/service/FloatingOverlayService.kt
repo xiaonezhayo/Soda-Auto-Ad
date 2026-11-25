@@ -143,7 +143,7 @@ class FloatingOverlayService : Service() {
         }
 
         val spacer = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(6), dp(1))
+            this.layoutParams = LinearLayout.LayoutParams(dp(6), dp(1))
         }
 
         container.addView(statusView)
