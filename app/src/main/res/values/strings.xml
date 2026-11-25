@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">汽水广告助手</string>
+    <string name="accessibility_service_label">汽水广告助手无障碍服务</string>
+    <string name="accessibility_service_description">用于自动识别并点击汽水音乐“免费听歌时长”广告入口与广告关闭按钮。仅在您主动开启任务时运行，遇到跳出应用或人机验证会立即暂停并通知您。</string>
+</resources>
