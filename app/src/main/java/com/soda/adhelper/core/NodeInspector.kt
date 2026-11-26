@@ -77,8 +77,18 @@ object NodeInspector {
         nodes: List<UiNodeSnapshot>,
         keywords: List<String>
     ): UiNodeSnapshot? {
-        val visible = nodes.filter { it.visibleToUser && it.matchesAny(keywords) }
-        return visible.firstOrNull { it.clickable } ?: visible.firstOrNull()
+        val visible = nodes.filter { it.visibleToUser }
+        for (kw in keywords) {
+            if (kw.isBlank()) continue
+            val matched = visible.filter {
+                it.text.contains(kw, ignoreCase = true) ||
+                    it.contentDesc.contains(kw, ignoreCase = true)
+            }
+            if (matched.isNotEmpty()) {
+                return matched.firstOrNull { it.clickable } ?: matched.first()
+            }
+        }
+        return null
     }
 
     fun findTopCornerCloseCandidate(

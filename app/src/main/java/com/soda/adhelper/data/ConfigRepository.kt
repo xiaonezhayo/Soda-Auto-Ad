@@ -50,7 +50,11 @@ class ConfigRepository(context: Context) {
     private fun loadKeywords(key: String, fallback: List<String>): List<String> {
         val raw = prefs.getString(key, null) ?: return fallback
         val parsed = AutomationConfig.parseKeywords(raw)
-        return parsed.ifEmpty { fallback }
+        if (parsed.isEmpty()) return fallback
+        if (key == KEY_ENTRY_KW && "领取奖励" !in parsed) {
+            return listOf("领取奖励") + parsed
+        }
+        return parsed
     }
 
     companion object {

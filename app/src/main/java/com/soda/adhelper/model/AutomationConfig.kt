@@ -18,15 +18,16 @@ data class AutomationConfig(
         const val DEFAULT_TARGET_PACKAGE = "com.luna.music"
 
         val DEFAULT_ENTRY_KEYWORDS = listOf(
-            "看广告",
-            "免费听",
-            "领时长",
-            "免费畅听",
+            "领取奖励",
             "再看一个",
             "继续看广告",
+            "看广告",
             "看视频领",
+            "立即领取",
             "去领取",
-            "立即领取"
+            "领时长",
+            "免费畅听",
+            "免费听歌"
         )
 
         val DEFAULT_REWARD_KEYWORDS = listOf(

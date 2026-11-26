@@ -223,7 +223,7 @@ class SodaAccessibilityService : AccessibilityService() {
                 AdPhase.FINDING_ENTRY -> {
                     val entryNode = NodeInspector.findFirstMatch(nodes, config.entryKeywords)
                     if (entryNode != null) {
-                        AutomationRuntime.log(LogLevel.INFO, "找到广告入口：${entryNode.label}，准备点击")
+                        AutomationRuntime.log(LogLevel.INFO, "控件树找到广告入口：${entryNode.label}，准备点击")
                         performTap(entryNode.bounds)
                         adStartedAt = System.currentTimeMillis()
                         rewardDetected = false
@@ -234,6 +234,37 @@ class SodaAccessibilityService : AccessibilityService() {
                         delay(config.postClickDelayMs)
                     } else {
                         if (findingEntrySince == 0L) findingEntrySince = now
+                        // Fallback to full-screen OCR after 2.5s (handles WebView/image popups like "领取奖励")
+                        if ((now - findingEntrySince) >= ENTRY_OCR_START_MS && (now - lastOcrAt) >= OCR_INTERVAL_MS) {
+                            lastOcrAt = now
+                            val ocrHits = runOcr(topFraction = 1.0f)
+                            if (ocrHits.isNotEmpty()) {
+                                val ocrCaptcha = findOcrMatch(ocrHits, config.captchaKeywords)
+                                if (ocrCaptcha != null) {
+                                    pauseWithAlert("OCR 检测到人机验证（${ocrCaptcha.text}），请手动完成后点击继续")
+                                    return
+                                }
+                                val ocrLimit = findOcrMatch(ocrHits, config.dailyLimitKeywords)
+                                if (ocrLimit != null) {
+                                    completeWithAlert("OCR 检测到上限提示（${ocrLimit.text}），本次共完成 ${snap.completedAds} 次")
+                                    return
+                                }
+                                val ocrEntry = findOcrMatch(ocrHits, config.entryKeywords)
+                                if (ocrEntry != null) {
+                                    AutomationRuntime.log(LogLevel.INFO, "OCR 找到广告入口：${ocrEntry.text}，准备点击")
+                                    performTap(ocrEntry.bounds)
+                                    adStartedAt = System.currentTimeMillis()
+                                    rewardDetected = false
+                                    rewardDetectedAt = 0L
+                                    lastOcrAt = 0L
+                                    closeAttempts = 0
+                                    AutomationRuntime.updatePhase(AdPhase.WATCHING_AD, "已进入广告，等待奖励发放…")
+                                    delay(config.postClickDelayMs)
+                                    continue
+                                }
+                            }
+                        }
+
                         if (now - findingEntrySince > FIND_ENTRY_TIMEOUT_MS) {
                             AutomationRuntime.updateNodeDump(NodeInspector.formatNodeDump(activePkg, nodes))
                             pauseWithAlert("连续 20 秒未找到广告入口按钮，请手动切到“领免费时长”页面或检查关键词设置")
@@ -276,7 +307,7 @@ class SodaAccessibilityService : AccessibilityService() {
                     // Fallback to on-device ML Kit OCR on top screen band when needed
                     if (adElapsedSec >= OCR_START_AFTER_SECONDS && (now - lastOcrAt) >= OCR_INTERVAL_MS) {
                         lastOcrAt = now
-                        val ocrHits = runTopBandOcr()
+                        val ocrHits = runOcr(topFraction = 0.28f)
                         if (ocrHits.isNotEmpty()) {
                             val ocrCaptcha = findOcrMatch(ocrHits, config.captchaKeywords)
                             if (ocrCaptcha != null) {
@@ -350,6 +381,7 @@ class SodaAccessibilityService : AccessibilityService() {
                             AutomationRuntime.incrementCompletedAds("已完成第 $newCount 条广告，准备下一条…")
                             AutomationRuntime.log(LogLevel.INFO, "成功返回入口页，累计完成 $newCount 条广告")
                             findingEntrySince = now
+                            lastOcrAt = 0L
                             AutomationRuntime.updatePhase(AdPhase.FINDING_ENTRY, "已完成 $newCount 次，寻找下一条广告…")
                             delay(config.pollIntervalMs)
                         }
@@ -373,6 +405,7 @@ class SodaAccessibilityService : AccessibilityService() {
                             AutomationRuntime.incrementCompletedAds("广告已关闭（累计 $newCount 次），正在检查入口…")
                             AutomationRuntime.log(LogLevel.INFO, "广告页已退出，累计完成 $newCount 条广告")
                             findingEntrySince = now
+                            lastOcrAt = 0L
                             AutomationRuntime.updatePhase(AdPhase.FINDING_ENTRY, "寻找下一条广告入口…")
                             delay(config.pollIntervalMs)
                         }
@@ -395,11 +428,11 @@ class SodaAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun runTopBandOcr(): List<OcrTextHit> {
+    private suspend fun runOcr(topFraction: Float = 0.28f): List<OcrTextHit> {
         val bitmap = takeScreenshotBitmap() ?: return emptyList()
         return try {
             withContext(Dispatchers.Default) {
-                ocrRecognizer.recognize(bitmap, topFraction = 0.28f)
+                ocrRecognizer.recognize(bitmap, topFraction = topFraction)
             }
         } finally {
             if (!bitmap.isRecycled) {
@@ -445,9 +478,12 @@ class SodaAccessibilityService : AccessibilityService() {
     }
 
     private fun findOcrMatch(hits: List<OcrTextHit>, keywords: List<String>): OcrTextHit? {
-        return hits.firstOrNull { hit ->
-            keywords.any { kw -> kw.isNotBlank() && hit.text.contains(kw, ignoreCase = true) }
+        for (kw in keywords) {
+            if (kw.isBlank()) continue
+            val matched = hits.firstOrNull { it.text.contains(kw, ignoreCase = true) }
+            if (matched != null) return matched
         }
+        return null
     }
 
     private suspend fun performTap(bounds: Rect): Boolean = suspendCancellableCoroutine { continuation ->
@@ -501,6 +537,7 @@ class SodaAccessibilityService : AccessibilityService() {
         private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         private const val LAUNCH_GRACE_MS = 9_000L
         private const val FIND_ENTRY_TIMEOUT_MS = 20_000L
+        private const val ENTRY_OCR_START_MS = 2_500L
         private const val OCR_START_AFTER_SECONDS = 12L
         private const val OCR_INTERVAL_MS = 3_000L
         private const val MIN_AD_SECONDS_BEFORE_CLOSE = 18L
