@@ -282,8 +282,21 @@ class SodaAccessibilityService : AccessibilityService() {
                         return
                     }
 
-                    // Check reward text via Accessibility tree first
+                    val hasCountdownNode = NodeInspector.findFirstMatch(nodes, COUNTDOWN_KEYWORDS) != null
+
+                    // If an accidental early-exit dialog appeared before reward was earned, tap "继续观看"
                     if (!rewardDetected) {
+                        val continueWatchNode = NodeInspector.findFirstMatch(nodes, CONTINUE_WATCH_KEYWORDS)
+                        if (continueWatchNode != null) {
+                            AutomationRuntime.log(LogLevel.INFO, "检测到提前退出确认弹窗，点击“${continueWatchNode.label}”继续等待播完")
+                            performTap(continueWatchNode.bounds)
+                            delay(config.postClickDelayMs)
+                            continue
+                        }
+                    }
+
+                    // Check reward text via Accessibility tree first (only when countdown is gone)
+                    if (!rewardDetected && !hasCountdownNode) {
                         val rewardNode = NodeInspector.findFirstMatch(nodes, config.rewardClaimedKeywords)
                         if (rewardNode != null) {
                             rewardDetected = true
@@ -293,9 +306,9 @@ class SodaAccessibilityService : AccessibilityService() {
                         }
                     }
 
-                    // Check close button via Accessibility tree
+                    // Only click close after reward is confirmed AND countdown is no longer shown
                     val closeNode = NodeInspector.findFirstMatch(nodes, config.closeKeywords)
-                    if (closeNode != null && (rewardDetected || adElapsedSec >= MIN_AD_SECONDS_BEFORE_CLOSE)) {
+                    if (closeNode != null && rewardDetected && !hasCountdownNode) {
                         AutomationRuntime.log(LogLevel.INFO, "控件树找到关闭按钮：${closeNode.label}，执行点击")
                         performTap(closeNode.bounds)
                         closeAttempts = 1
@@ -321,7 +334,9 @@ class SodaAccessibilityService : AccessibilityService() {
                                 return
                             }
 
-                            if (!rewardDetected) {
+                            val ocrHasCountdown = findOcrMatch(ocrHits, COUNTDOWN_KEYWORDS) != null
+
+                            if (!rewardDetected && !ocrHasCountdown) {
                                 val ocrReward = findOcrMatch(ocrHits, config.rewardClaimedKeywords)
                                 if (ocrReward != null) {
                                     rewardDetected = true
@@ -332,7 +347,7 @@ class SodaAccessibilityService : AccessibilityService() {
                             }
 
                             val ocrClose = findOcrMatch(ocrHits, config.closeKeywords)
-                            if (ocrClose != null && (rewardDetected || adElapsedSec >= MIN_AD_SECONDS_BEFORE_CLOSE)) {
+                            if (ocrClose != null && rewardDetected && !ocrHasCountdown) {
                                 AutomationRuntime.log(LogLevel.INFO, "OCR 找到关闭按钮：${ocrClose.text}，执行点击")
                                 performTap(ocrClose.bounds)
                                 closeAttempts = 1
@@ -343,8 +358,8 @@ class SodaAccessibilityService : AccessibilityService() {
                         }
                     }
 
-                    // If reward is already claimed but close button has no text (pure icon), try top-corner icon node
-                    if (rewardDetected && (now - rewardDetectedAt) >= 2000L) {
+                    // If reward is already claimed (and no countdown) but close button has no text, try top-corner icon node
+                    if (rewardDetected && !hasCountdownNode && (now - rewardDetectedAt) >= 2000L) {
                         val metrics = resources.displayMetrics
                         val iconClose = NodeInspector.findTopCornerCloseCandidate(
                             nodes = nodes,
@@ -540,8 +555,21 @@ class SodaAccessibilityService : AccessibilityService() {
         private const val ENTRY_OCR_START_MS = 2_500L
         private const val OCR_START_AFTER_SECONDS = 12L
         private const val OCR_INTERVAL_MS = 3_000L
-        private const val MIN_AD_SECONDS_BEFORE_CLOSE = 18L
         private const val MAX_CLOSE_ATTEMPTS = 3
+
+        private val COUNTDOWN_KEYWORDS = listOf(
+            "秒后可领",
+            "秒后获得",
+            "秒后领",
+            "秒后解锁",
+            "s后可领",
+            "s后获得"
+        )
+
+        private val CONTINUE_WATCH_KEYWORDS = listOf(
+            "继续观看",
+            "继续看广告"
+        )
 
         private val SECONDARY_EXIT_KEYWORDS = listOf(
             "坚持退出",

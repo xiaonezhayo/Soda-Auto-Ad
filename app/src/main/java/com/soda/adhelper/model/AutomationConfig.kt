@@ -4,7 +4,7 @@ data class AutomationConfig(
     val targetPackageName: String = DEFAULT_TARGET_PACKAGE,
     val maxAdCount: Int = 10,
     val maxRunMinutes: Int = 60,
-    val adTimeoutSeconds: Int = 75,
+    val adTimeoutSeconds: Int = 90,
     val muteDuringRun: Boolean = true,
     val pollIntervalMs: Long = 1200L,
     val postClickDelayMs: Long = 1600L,
