@@ -79,8 +79,11 @@ class ConfigRepository(context: Context) {
         val raw = prefs.getString(key, null) ?: return fallback
         val parsed = AutomationConfig.parseKeywords(raw)
         if (parsed.isEmpty()) return fallback
-        if (key == KEY_ENTRY_KW && "领取奖励" !in parsed) {
-            return listOf("领取奖励") + parsed
+        if (key == KEY_ENTRY_KW) {
+            val merged = parsed.toMutableList()
+            if ("领取奖励" !in merged) merged.add(0, "领取奖励")
+            if ("免费听" !in merged) merged.add("免费听")
+            return merged
         }
         return parsed
     }
@@ -109,12 +112,17 @@ class ConfigRepository(context: Context) {
                 val obj = arr.getJSONObject(i)
                 val actionName = obj.optString("action", StepAction.CLICK_KEYWORD.name)
                 val action = runCatching { StepAction.valueOf(actionName) }.getOrDefault(StepAction.CLICK_KEYWORD)
+                val id = obj.optString("id").ifBlank { UUID.randomUUID().toString() }
+                var keywords = AutomationConfig.parseKeywords(obj.optString("keywords"))
+                if (id == "step_entry" && "免费听歌" in keywords && "免费听" !in keywords) {
+                    keywords = keywords + "免费听"
+                }
                 list.add(
                     WorkflowStep(
-                        id = obj.optString("id").ifBlank { UUID.randomUUID().toString() },
+                        id = id,
                         name = obj.optString("name").ifBlank { action.label },
                         action = action,
-                        keywords = AutomationConfig.parseKeywords(obj.optString("keywords")),
+                        keywords = keywords,
                         secondaryKeywords = AutomationConfig.parseKeywords(obj.optString("secondaryKeywords")),
                         timeoutSeconds = obj.optInt("timeoutSeconds", 30).coerceIn(1, 300)
                     )

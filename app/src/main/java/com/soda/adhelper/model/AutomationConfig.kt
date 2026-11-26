@@ -50,7 +50,7 @@ data class AutomationConfig(
             "去领取",
             "领时长",
             "免费畅听",
-            "免费听歌"
+            "免费听"
         )
 
         val DEFAULT_REWARD_KEYWORDS = listOf(

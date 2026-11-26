@@ -75,9 +75,15 @@ object NodeInspector {
 
     fun findFirstMatch(
         nodes: List<UiNodeSnapshot>,
-        keywords: List<String>
+        keywords: List<String>,
+        maxBottomY: Int? = null,
+        exclude: ((UiNodeSnapshot) -> Boolean)? = null
     ): UiNodeSnapshot? {
-        val visible = nodes.filter { it.visibleToUser }
+        val visible = nodes.filter { node ->
+            node.visibleToUser &&
+                (maxBottomY == null || node.bounds.centerY() <= maxBottomY) &&
+                (exclude == null || !exclude(node))
+        }
         for (kw in keywords) {
             if (kw.isBlank()) continue
             val matched = visible.filter {
@@ -97,20 +103,22 @@ object NodeInspector {
         screenHeight: Int
     ): UiNodeSnapshot? {
         if (screenWidth <= 0 || screenHeight <= 0) return null
-        val maxTopY = (screenHeight * 0.16f).toInt()
-        val maxButtonSize = (screenWidth * 0.20f).toInt()
+        val maxTopY = (screenHeight * 0.18f).toInt()
+        val maxButtonWidth = (screenWidth * 0.42f).toInt()
+        val maxButtonHeight = (screenHeight * 0.10f).toInt()
         val minButtonSize = (screenWidth * 0.03f).toInt()
 
         return nodes.firstOrNull { node ->
             val w = node.bounds.width()
             val h = node.bounds.height()
             val inTopBand = node.bounds.top >= 0 && node.bounds.bottom <= maxTopY
-            val nearEdge = node.bounds.left <= (screenWidth * 0.22f) || node.bounds.right >= (screenWidth * 0.78f)
-            val reasonableSize = w in minButtonSize..maxButtonSize && h in minButtonSize..maxButtonSize
+            val nearEdge = node.bounds.right >= (screenWidth * 0.75f) || node.bounds.left <= (screenWidth * 0.22f)
+            val reasonableSize = w in minButtonSize..maxButtonWidth && h in minButtonSize..maxButtonHeight
             val looksLikeCloseId = node.viewId.contains("close", ignoreCase = true) ||
                 node.viewId.contains("skip", ignoreCase = true) ||
                 node.viewId.contains("dismiss", ignoreCase = true)
-            node.visibleToUser && inTopBand && nearEdge && reasonableSize && (node.clickable || looksLikeCloseId)
+            val isFeedbackOrAdTag = node.label.contains("反馈") || node.label == "广告"
+            node.visibleToUser && !isFeedbackOrAdTag && inTopBand && nearEdge && reasonableSize && (node.clickable || looksLikeCloseId)
         }
     }
 

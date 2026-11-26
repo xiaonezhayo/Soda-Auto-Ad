@@ -226,7 +226,11 @@ class SodaAccessibilityService : AccessibilityService() {
             val keywords = step.keywords.ifEmpty { config.entryKeywords }
             val now = System.currentTimeMillis()
 
-            val node = NodeInspector.findFirstMatch(screen.nodes, keywords)
+            val node = NodeInspector.findFirstMatch(
+                nodes = screen.nodes,
+                keywords = keywords,
+                exclude = { isIgnoredEntryTitle(it.label) }
+            )
             if (node != null) {
                 AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 控件树命中「${node.label}」，执行点击")
                 performTap(node.bounds)
@@ -241,7 +245,11 @@ class SodaAccessibilityService : AccessibilityService() {
                 val ocrHits = runOcr(topFraction = 1.0f)
                 if (ocrHits.isNotEmpty()) {
                     if (!guardOcrHits(ocrHits, config)) return false
-                    val ocrMatch = findOcrMatch(ocrHits, keywords)
+                    val ocrMatch = findOcrMatch(
+                        hits = ocrHits,
+                        keywords = keywords,
+                        exclude = { isIgnoredEntryTitle(it.text) }
+                    )
                     if (ocrMatch != null) {
                         AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] OCR 命中「${ocrMatch.text}」，执行点击")
                         performTap(ocrMatch.bounds)
@@ -270,6 +278,7 @@ class SodaAccessibilityService : AccessibilityService() {
         val startedAt = System.currentTimeMillis()
         var rewardDetected = false
         var rewardDetectedAt = 0L
+        var rewardBounds: Rect? = null
         var lastOcrAt = 0L
         val timeoutSec = step.timeoutSeconds.coerceAtLeast(15)
 
@@ -285,6 +294,7 @@ class SodaAccessibilityService : AccessibilityService() {
             val rewardKeywords = step.keywords.ifEmpty { config.rewardClaimedKeywords }
             val closeKeywords = step.secondaryKeywords.ifEmpty { config.closeKeywords }
             val checkIntervalMs = (config.adCheckIntervalSeconds * 1000L).coerceAtLeast(1000L)
+            val topMaxY = topBandMaxY()
 
             if (elapsedSec >= timeoutSec) {
                 AutomationRuntime.updateNodeDump(NodeInspector.formatNodeDump(screen.packageName, screen.nodes))
@@ -292,7 +302,11 @@ class SodaAccessibilityService : AccessibilityService() {
                 return false
             }
 
-            val hasCountdownNode = NodeInspector.findFirstMatch(screen.nodes, COUNTDOWN_KEYWORDS) != null
+            val hasCountdownNode = NodeInspector.findFirstMatch(
+                nodes = screen.nodes,
+                keywords = COUNTDOWN_KEYWORDS,
+                maxBottomY = topMaxY
+            ) != null
 
             // If accidental early-exit dialog appeared before reward was earned, tap "继续观看"
             if (!rewardDetected) {
@@ -305,23 +319,32 @@ class SodaAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // 1. Check reward via Accessibility tree (only when countdown is gone)
+            // 1. Check reward via Accessibility tree (only in top bar and when countdown is gone)
             if (!rewardDetected && !hasCountdownNode) {
-                val rewardNode = NodeInspector.findFirstMatch(screen.nodes, rewardKeywords)
+                val rewardNode = NodeInspector.findFirstMatch(
+                    nodes = screen.nodes,
+                    keywords = rewardKeywords,
+                    maxBottomY = topMaxY
+                )
                 if (rewardNode != null) {
                     rewardDetected = true
                     rewardDetectedAt = now
+                    rewardBounds = Rect(rewardNode.bounds)
                     AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 控件树检测到奖励提示：${rewardNode.label}")
                     AutomationRuntime.updatePhase(AdPhase.WATCHING_AD, "已获得奖励，准备关闭广告…")
                 }
             }
 
-            // 2. If reward is confirmed and countdown is gone, click close via Accessibility tree
-            val closeNode = NodeInspector.findFirstMatch(screen.nodes, closeKeywords)
+            // 2. If reward is confirmed and countdown is gone, click close via Accessibility tree (top bar only)
+            val closeNode = NodeInspector.findFirstMatch(
+                nodes = screen.nodes,
+                keywords = closeKeywords,
+                maxBottomY = topMaxY
+            )
             if (closeNode != null && rewardDetected && !hasCountdownNode) {
                 AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 控件树找到关闭按钮：${closeNode.label}，执行点击")
                 performTap(closeNode.bounds)
-                return verifyAdClosed(rewardKeywords, closeKeywords)
+                return verifyAdClosed(rewardKeywords, closeKeywords, rewardBounds)
             }
 
             // 3. Periodic OCR check on top band using user-configured interval & start delay
@@ -337,6 +360,7 @@ class SodaAccessibilityService : AccessibilityService() {
                         if (ocrReward != null) {
                             rewardDetected = true
                             rewardDetectedAt = now
+                            rewardBounds = Rect(ocrReward.bounds)
                             AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] OCR 检测到奖励提示：${ocrReward.text}")
                             AutomationRuntime.updatePhase(AdPhase.WATCHING_AD, "OCR 确认已获得奖励，寻找关闭按钮…")
                         }
@@ -346,13 +370,13 @@ class SodaAccessibilityService : AccessibilityService() {
                     if (ocrClose != null && rewardDetected && !ocrHasCountdown) {
                         AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] OCR 找到关闭按钮：${ocrClose.text}，执行点击")
                         performTap(ocrClose.bounds)
-                        return verifyAdClosed(rewardKeywords, closeKeywords)
+                        return verifyAdClosed(rewardKeywords, closeKeywords, rewardBounds)
                     }
                 }
             }
 
-            // 4. Fallback to top-corner close icon node after reward confirmed
-            if (rewardDetected && !hasCountdownNode && (now - rewardDetectedAt) >= 2000L) {
+            // 4. Fallback: top-corner icon node or tapping × beside "领取成功"
+            if (rewardDetected && !hasCountdownNode && (now - rewardDetectedAt) >= 1500L) {
                 val metrics = resources.displayMetrics
                 val iconClose = NodeInspector.findTopCornerCloseCandidate(
                     nodes = screen.nodes,
@@ -360,9 +384,23 @@ class SodaAccessibilityService : AccessibilityService() {
                     screenHeight = metrics.heightPixels
                 )
                 if (iconClose != null) {
-                    AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 奖励已发放，点击顶部角落关闭图标（${iconClose.className}）")
-                    performTap(iconClose.bounds)
-                    return verifyAdClosed(rewardKeywords, closeKeywords)
+                    if (iconClose.bounds.width() > iconClose.bounds.height() * 2 &&
+                        iconClose.bounds.right >= (metrics.widthPixels * 0.75f)
+                    ) {
+                        AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 奖励已发放，点击右上角胶囊关闭区域")
+                        tapRightEdgeOfPill(iconClose.bounds)
+                    } else {
+                        AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 奖励已发放，点击顶部角落关闭图标（${iconClose.className}）")
+                        performTap(iconClose.bounds)
+                    }
+                    return verifyAdClosed(rewardKeywords, closeKeywords, rewardBounds)
+                }
+
+                val savedRewardBounds = rewardBounds
+                if (savedRewardBounds != null) {
+                    AutomationRuntime.log(LogLevel.INFO, "[$stepLabel] 点击“领取成功”右侧 × 区域关闭广告")
+                    tapCloseBesideReward(savedRewardBounds)
+                    return verifyAdClosed(rewardKeywords, closeKeywords, savedRewardBounds)
                 }
             }
 
@@ -378,15 +416,18 @@ class SodaAccessibilityService : AccessibilityService() {
 
     private suspend fun verifyAdClosed(
         rewardKeywords: List<String>,
-        closeKeywords: List<String>
+        closeKeywords: List<String>,
+        rewardBounds: Rect?
     ): Boolean {
         val config = AutomationRuntime.config.value
         AutomationRuntime.updatePhase(AdPhase.CLOSING_AD, "正在确认广告已关闭…")
         delay(config.postClickDelayMs)
 
         var attempts = 1
+        var checkedPopupOcr = false
         while (isStillRunning()) {
             val screen = inspectAndGuardScreen(config) ?: return false
+            val topMaxY = topBandMaxY()
 
             val nextStepEntryKeywords = config.workflowSteps
                 .firstOrNull { it.action == StepAction.CLICK_KEYWORD }
@@ -394,15 +435,44 @@ class SodaAccessibilityService : AccessibilityService() {
                 ?.ifEmpty { config.entryKeywords }
                 ?: config.entryKeywords
 
-            val entryAgain = NodeInspector.findFirstMatch(screen.nodes, nextStepEntryKeywords)
+            val entryAgain = NodeInspector.findFirstMatch(
+                nodes = screen.nodes,
+                keywords = nextStepEntryKeywords,
+                exclude = { isIgnoredEntryTitle(it.label) }
+            )
             if (entryAgain != null) {
                 AutomationRuntime.log(LogLevel.INFO, "检测到下一轮入口「${entryAgain.label}」，本条广告已结束")
                 return true
             }
 
-            val stillHasClose = NodeInspector.findFirstMatch(screen.nodes, closeKeywords)
-            val stillHasReward = NodeInspector.findFirstMatch(screen.nodes, rewardKeywords)
+            val stillHasClose = NodeInspector.findFirstMatch(
+                nodes = screen.nodes,
+                keywords = closeKeywords,
+                maxBottomY = topMaxY
+            )
+            val stillHasReward = NodeInspector.findFirstMatch(
+                nodes = screen.nodes,
+                keywords = rewardKeywords,
+                maxBottomY = topMaxY
+            )
             val confirmExitNode = NodeInspector.findFirstMatch(screen.nodes, SECONDARY_EXIT_KEYWORDS)
+
+            if (stillHasReward != null && !checkedPopupOcr) {
+                checkedPopupOcr = true
+                val ocrHits = runOcr(topFraction = 1.0f)
+                if (ocrHits.isNotEmpty()) {
+                    if (!guardOcrHits(ocrHits, config)) return false
+                    val popupEntry = findOcrMatch(
+                        hits = ocrHits,
+                        keywords = nextStepEntryKeywords,
+                        exclude = { isIgnoredEntryTitle(it.text) }
+                    )
+                    if (popupEntry != null) {
+                        AutomationRuntime.log(LogLevel.INFO, "OCR 检测到下一轮入口弹窗「${popupEntry.text}」，本条广告已结束")
+                        return true
+                    }
+                }
+            }
 
             when {
                 confirmExitNode != null -> {
@@ -415,6 +485,13 @@ class SodaAccessibilityService : AccessibilityService() {
                 stillHasClose != null && attempts < MAX_CLOSE_ATTEMPTS -> {
                     AutomationRuntime.log(LogLevel.INFO, "再次尝试点击关闭按钮：${stillHasClose.label}（第 ${attempts + 1} 次）")
                     performTap(stillHasClose.bounds)
+                    attempts++
+                    delay(config.postClickDelayMs)
+                }
+
+                stillHasReward != null && rewardBounds != null && attempts < MAX_CLOSE_ATTEMPTS -> {
+                    AutomationRuntime.log(LogLevel.INFO, "再次点击“领取成功”右侧 × 区域（第 ${attempts + 1} 次）")
+                    tapCloseBesideReward(rewardBounds)
                     attempts++
                     delay(config.postClickDelayMs)
                 }
@@ -575,13 +652,47 @@ class SodaAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun findOcrMatch(hits: List<OcrTextHit>, keywords: List<String>): OcrTextHit? {
+    private fun findOcrMatch(
+        hits: List<OcrTextHit>,
+        keywords: List<String>,
+        exclude: ((OcrTextHit) -> Boolean)? = null
+    ): OcrTextHit? {
         for (kw in keywords) {
             if (kw.isBlank()) continue
-            val matched = hits.firstOrNull { it.text.contains(kw, ignoreCase = true) }
+            val matched = hits.firstOrNull {
+                (exclude == null || !exclude(it)) &&
+                    it.text.contains(kw, ignoreCase = true)
+            }
             if (matched != null) return matched
         }
         return null
+    }
+
+    private fun isIgnoredEntryTitle(text: String): Boolean {
+        return text.contains("第") && text.contains("免费听")
+    }
+
+    private fun topBandMaxY(): Int {
+        return (resources.displayMetrics.heightPixels * 0.25f).toInt()
+    }
+
+    private suspend fun tapRightEdgeOfPill(pillBounds: Rect): Boolean {
+        val h = pillBounds.height().coerceAtLeast(32)
+        val tapX = (pillBounds.right - h * 0.55f).toInt().coerceAtLeast(pillBounds.centerX())
+        val tapRect = Rect(tapX - 10, pillBounds.centerY() - 10, tapX + 10, pillBounds.centerY() + 10)
+        return performTap(tapRect)
+    }
+
+    private suspend fun tapCloseBesideReward(rewardBounds: Rect): Boolean {
+        val screenW = resources.displayMetrics.widthPixels
+        val h = rewardBounds.height().coerceAtLeast(32)
+        val tapX = if (rewardBounds.right < screenW * 0.86f) {
+            (rewardBounds.right + h * 0.9f).toInt().coerceAtMost((screenW * 0.93f).toInt())
+        } else {
+            (rewardBounds.right - h * 0.55f).toInt().coerceAtLeast(rewardBounds.centerX())
+        }
+        val tapRect = Rect(tapX - 10, rewardBounds.centerY() - 10, tapX + 10, rewardBounds.centerY() + 10)
+        return performTap(tapRect)
     }
 
     private suspend fun performTap(bounds: Rect): Boolean = suspendCancellableCoroutine { continuation ->
@@ -643,7 +754,9 @@ class SodaAccessibilityService : AccessibilityService() {
             "秒后领",
             "秒后解锁",
             "s后可领",
-            "s后获得"
+            "s后获得",
+            "秒后",
+            "s后"
         )
 
         private val CONTINUE_WATCH_KEYWORDS = listOf(
